@@ -1,0 +1,21 @@
+{
+  "name": "learn-redis",
+  "version": "1.0.0",
+  "description": "An exhaustive, production-grade Redis in-memory architecture & SRE masterclass.",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/redis.test.mjs"
+  },
+  "keywords": [
+    "redis",
+    "cache",
+    "in-memory",
+    "caching",
+    "distributed-lock",
+    "redlock",
+    "sre"
+  ],
+  "author": "Manthan Ank",
+  "license": "MIT"
+}
