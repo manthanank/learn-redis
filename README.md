@@ -1006,3 +1006,130 @@ Contributions are welcome! Please review our [CONTRIBUTING.md](CONTRIBUTING.md) 
 
 ## 📄 License
 This project is open-source software licensed under the [MIT License](LICENSE).
+
+
+
+### Complete Redis Enterprise Patterns & Production Code Examples
+
+#### 1. Redis Streams: High-Throughput Event Broker with Consumer Groups
+Streams provide persistent, partitioned message queues with consumer acknowledgments and dead-letter recovery:
+
+```bash
+# 1. Producer appends order created event (ID auto-generated via '*')
+XADD orders:stream * orderId "ord-9921" customerId "cust-441" amount "149.99"
+
+# 2. Create consumer group 'billing-workers' reading from the start ('0')
+XGROUP CREATE orders:stream billing-workers 0 MKSTREAM
+
+# 3. Consumer 'worker-1' reads up to 2 unacknowledged messages
+XREADGROUP GROUP billing-workers worker-1 COUNT 2 BLOCK 2000 STREAMS orders:stream >
+
+# 4. Acknowledge message processing completion
+XACK orders:stream billing-workers "1741340000000-0"
+
+# 5. Inspect pending (unacknowledged/stalled) messages
+XPENDING orders:stream billing-workers - + 10
+
+# 6. Claim a message abandoned by a crashed worker (> 60000ms idle)
+XCLAIM orders:stream billing-workers worker-2 60000 1741340000000-0
+```
+
+---
+
+#### 2. Atomic Lua Scripting: Distributed Token Bucket Rate Limiter
+Executes atomically within Redis single-threaded engine, preventing race conditions without multi-network round-trips:
+
+```lua
+-- rate_limiter.lua
+-- KEYS[1]: rate limit bucket key (e.g., 'ratelimit:user:101')
+-- ARGV[1]: max capacity (e.g., 10 tokens)
+-- ARGV[2]: refill rate per second (e.g., 2 tokens/sec)
+-- ARGV[3]: current timestamp in epoch seconds
+-- ARGV[4]: requested tokens (e.g., 1)
+
+local key = KEYS[1]
+local capacity = tonumber(ARGV[1])
+local refill_rate = tonumber(ARGV[2])
+local now = tonumber(ARGV[3])
+local requested = tonumber(ARGV[4])
+
+-- Get current bucket state
+local data = redis.call('HMGET', key, 'tokens', 'last_updated')
+local tokens = tonumber(data[1])
+local last_updated = tonumber(data[2])
+
+if tokens == nil then
+  tokens = capacity
+  last_updated = now
+else
+  -- Calculate tokens generated since last update
+  local delta = math.max(0, now - last_updated)
+  tokens = math.min(capacity, tokens + (delta * refill_rate))
+  last_updated = now
+end
+
+if tokens >= requested then
+  tokens = tokens - requested
+  redis.call('HMSET', key, 'tokens', tokens, 'last_updated', last_updated)
+  redis.call('EXPIRE', key, math.ceil(capacity / refill_rate) * 2)
+  return 1 -- Allowed
+else
+  redis.call('HMSET', key, 'tokens', tokens, 'last_updated', last_updated)
+  return 0 -- Rejected (Rate limit exceeded)
+end
+```
+
+**Executing Lua Script via CLI:**
+```bash
+redis-cli --eval rate_limiter.lua ratelimit:user:101 , 10 2 $(date +%s) 1
+```
+
+---
+
+#### 3. Safe Distributed Lock with Atomic Release Pattern
+Prevents split-brain locks and ensures only the lock owner can release the token:
+
+```bash
+# 1. Acquire lock with 10s TTL and unique random owner UUID
+SET resource:lock:order-9921 "uuid-node-a-987" NX PX 10000
+# Returns 'OK' if acquired, nil if already locked by another node
+
+# 2. Release lock ONLY if the value matches the current owner UUID (Atomic Lua)
+EVAL "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end" 1 resource:lock:order-9921 "uuid-node-a-987"
+```
+
+---
+
+#### 4. Geospatial Proximity Search: Ride-Share Driver Matching
+Index spatial longitude/latitude coordinates and query nearest locations within radius:
+
+```bash
+# 1. Add driver coordinates (longitude, latitude, memberName)
+GEOADD drivers:active -73.9855 40.7484 "driver-car-1"
+GEOADD drivers:active -73.9870 40.7510 "driver-car-2"
+GEOADD drivers:active -73.9780 40.7600 "driver-car-3"
+
+# 2. Find drivers within a 2 kilometer radius of user pickup location
+GEOSEARCH drivers:active FROMLONLAT -73.9850 40.7480 BYRADIUS 2 km ASC WITHDIST WITHCOORD
+
+# 3. Calculate driving distance between two drivers
+GEODIST drivers:active "driver-car-1" "driver-car-2" km
+```
+
+---
+
+#### 5. HyperLogLog: Memory-Constant Cardinality Estimation
+Estimates 100,000,000 unique IP visits with 0.81% standard error using only 12 KB memory:
+
+```bash
+# Add daily active user IDs
+PFADD daily_active_users:2026-09-07 "usr-1" "usr-2" "usr-3" "usr-1"
+PFADD daily_active_users:2026-09-08 "usr-3" "usr-4" "usr-5"
+
+# Count unique users for a single day
+PFCOUNT daily_active_users:2026-09-07
+
+# Merge multiple daily sets into weekly unique count with zero recomputation
+PFMERGE weekly_active_users daily_active_users:2026-09-07 daily_active_users:2026-09-08
+PFCOUNT weekly_active_users
+```
